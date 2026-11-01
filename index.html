@@ -1,0 +1,252 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<title>Juggle</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+html,body{margin:0;height:100%;overflow:hidden;background:#262b36;cursor:none}
+canvas{display:block}
+#c{position:fixed;top:18px;left:0;right:0;text-align:center;font:500 22px system-ui,sans-serif;color:#f0f0f4;pointer-events:none;user-select:none}
+#u{position:fixed;top:62px;transform:translateX(-50%);font:500 12px system-ui,sans-serif;color:#9aa0b2;display:none;pointer-events:none;text-align:center;line-height:1.3}
+</style>
+</head>
+<body>
+<div id="c">Toques: 0</div>
+<div id="u">▲<br><span id="uh"></span></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+/* ---------- constantes físicas (SI) ---------- */
+const R=0.11, M=0.43, G=9.81, H=0.001;               // radio, masa, gravedad, paso de física (1 kHz)
+const RHO=1.2, A=Math.PI*R*R;
+const KD=0.5*RHO*0.25*A/M;                           // arrastre (Cd=0.25)
+const KM=0.25*RHO*A*R/M;                             // Magnus
+const IN=2/3*M*R*R;                                  // inercia (esfera hueca)
+const HX=.1, HY=.055, HZ=.16, RR=.05;                // colisionador de la bota: caja redondeada
+const ZMIN=-1.5, ZMAX=.8, YMIN=.07;
+
+const ball={p:new THREE.Vector3(),v:new THREE.Vector3(),w:new THREE.Vector3(),q:new THREE.Quaternion()};
+const boot={x:0,y:.5,z:0,vx:0,vy:0,vz:0,roll:0,rr:0,tx:0,ty:.5};
+let touches=0,time=0,lastTouch=-1,walls=[];
+const label=document.getElementById('c'),ind=document.getElementById('u'),indh=document.getElementById('uh');
+
+/* ---------- escena ---------- */
+const BG=0x262b36, scene=new THREE.Scene();
+scene.background=new THREE.Color(BG);
+scene.fog=new THREE.Fog(BG,9,26);
+const cam=new THREE.PerspectiveCamera(35,1,.1,100);
+cam.position.set(0,2.2,5.4); cam.lookAt(0,1.15,0);
+const ren=new THREE.WebGLRenderer({antialias:true});
+ren.setPixelRatio(Math.min(devicePixelRatio,2));
+ren.shadowMap.enabled=true; ren.shadowMap.type=THREE.PCFSoftShadowMap;
+document.body.appendChild(ren.domElement);
+
+scene.add(new THREE.HemisphereLight(0xffffff,0x1c2029,.75));
+const sun=new THREE.DirectionalLight(0xffffff,.9);
+sun.position.set(3,7,4); sun.castShadow=true; sun.shadow.mapSize.set(2048,2048);
+const sc=sun.shadow.camera; sc.left=sc.bottom=-4; sc.right=sc.top=4; sc.near=1; sc.far=20;
+sun.shadow.bias=-.0004; scene.add(sun);
+const rim=new THREE.DirectionalLight(0x8fb0ff,.5); rim.position.set(-3,3,-4); scene.add(rim);
+
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshStandardMaterial({color:0x2c313d,roughness:.95}));
+floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; scene.add(floor);
+const grid=new THREE.GridHelper(80,80,0x3b4252,0x343a49); grid.position.y=.002; scene.add(grid);
+
+/* ---------- pelota clásica (pentágonos negros) ---------- */
+function ballTex(){
+  const W=512,Hh=256,cv=document.createElement('canvas'); cv.width=W; cv.height=Hh;
+  const g=cv.getContext('2d'),im=g.createImageData(W,Hh),D=im.data,t=(1+Math.sqrt(5))/2,V=[];
+  for(const a of[-1,1])for(const b of[-t,t])V.push([0,a,b],[a,b,0],[b,0,a]);
+  V.forEach(v=>{const l=Math.hypot(v[0],v[1],v[2]);v[0]/=l;v[1]/=l;v[2]/=l;});
+  const B=V.map(v=>{
+    const nb=V.find(u=>Math.abs(u[0]*v[0]+u[1]*v[1]+u[2]*v[2]-.4472)<.01);
+    const k=nb[0]*v[0]+nb[1]*v[1]+nb[2]*v[2];
+    let e=[nb[0]-v[0]*k,nb[1]-v[1]*k,nb[2]-v[2]*k]; const l=Math.hypot(e[0],e[1],e[2]); e=e.map(x=>x/l);
+    return [e,[v[1]*e[2]-v[2]*e[1],v[2]*e[0]-v[0]*e[2],v[0]*e[1]-v[1]*e[0]]];
+  });
+  const P=1.2566;
+  for(let y=0;y<Hh;y++)for(let x=0;x<W;x++){
+    const th=(y+.5)/Hh*Math.PI,ph=(x+.5)/W*2*Math.PI,st=Math.sin(th);
+    const d=[-Math.cos(ph)*st,Math.cos(th),Math.sin(ph)*st];
+    let bi=0,bd=-2;
+    for(let i=0;i<12;i++){const dd=d[0]*V[i][0]+d[1]*V[i][1]+d[2]*V[i][2];if(dd>bd){bd=dd;bi=i;}}
+    let c=244; const ang=Math.acos(Math.min(1,bd));
+    if(ang<.4){
+      const e1=B[bi][0],e2=B[bi][1];
+      const al=Math.atan2(d[0]*e2[0]+d[1]*e2[1]+d[2]*e2[2],d[0]*e1[0]+d[1]*e1[1]+d[2]*e1[2]);
+      const f=Math.abs(((al%P)+P)%P-P/2), rho=.28/Math.cos(f);
+      if(ang<rho)c=22; else if(ang<rho+.012)c=90;
+    }
+    const o=(y*W+x)*4; D[o]=D[o+1]=D[o+2]=c; D[o+3]=255;
+  }
+  g.putImageData(im,0,0);
+  return new THREE.CanvasTexture(cv);
+}
+const ballMesh=new THREE.Mesh(new THREE.SphereGeometry(R,48,32),new THREE.MeshStandardMaterial({map:ballTex(),roughness:.45}));
+ballMesh.castShadow=true; scene.add(ballMesh);
+
+/* ---------- puntera de la bota (misma forma que el colisionador) ---------- */
+function rbox(hx,hy,hz,r,seg,col){
+  const g=new THREE.BoxGeometry(2*hx,2*hy,2*hz,seg,seg>>1,seg),P=g.attributes.position,N=g.attributes.normal;
+  const ix=hx-r,iy=hy-r,iz=hz-r,C=new Float32Array(P.count*3);
+  for(let i=0;i<P.count;i++){
+    const x=P.getX(i),y=P.getY(i),z=P.getZ(i);
+    const cx=Math.max(-ix,Math.min(ix,x)),cy=Math.max(-iy,Math.min(iy,y)),cz=Math.max(-iz,Math.min(iz,z));
+    let nx=x-cx,ny=y-cy,nz=z-cz; const l=Math.hypot(nx,ny,nz)||1; nx/=l;ny/=l;nz/=l;
+    const fx=cx+nx*r,fy=cy+ny*r,fz=cz+nz*r;
+    P.setXYZ(i,fx,fy,fz); N.setXYZ(i,nx,ny,nz);
+    const c=col(fx,fy,fz,nx); C[i*3]=c[0];C[i*3+1]=c[1];C[i*3+2]=c[2];
+  }
+  g.setAttribute('color',new THREE.BufferAttribute(C,3));
+  return g;
+}
+const bootG=new THREE.Group();
+const body=new THREE.Mesh(
+  rbox(HX,HY,HZ,RR,32,(x,y,z,nx)=>{
+    if(Math.abs(nx)>.3){const s=z+1.2*y+.2,k=Math.floor(s/.07); if(k>=1&&k<=3&&s-k*.07<.024)return[.95,.95,.97];}
+    return[.09,.095,.11];
+  }),
+  new THREE.MeshStandardMaterial({vertexColors:true,roughness:.4,metalness:.05}));
+body.castShadow=true; bootG.add(body);
+const sole=new THREE.Mesh(rbox(HX+.004,.018,HZ+.004,.018,16,()=>[.9,.9,.92]),new THREE.MeshStandardMaterial({vertexColors:true,roughness:.5}));
+sole.position.y=-.045; sole.castShadow=true; bootG.add(sole);
+const studMat=new THREE.MeshStandardMaterial({color:0xe8e8ec,roughness:.5});
+[[-.06,.09],[.06,.09],[-.05,-.07],[.05,-.07]].forEach(([x,z])=>{
+  const s=new THREE.Mesh(new THREE.CylinderGeometry(.01,.013,.02,10),studMat);
+  s.position.set(x,-.073,z); s.castShadow=true; bootG.add(s);
+});
+scene.add(bootG);
+
+/* ---------- ratón -> posición de la bota ---------- */
+const ray=new THREE.Raycaster(),ndc=new THREE.Vector2(0,-.2),pl=new THREE.Plane(new THREE.Vector3(0,0,1),0),hit=new THREE.Vector3();
+addEventListener('pointermove',e=>ndc.set(e.clientX/innerWidth*2-1,-(e.clientY/innerHeight*2-1)));
+function aim(){
+  pl.constant=-boot.z; ray.setFromCamera(ndc,cam);
+  if(ray.ray.intersectPlane(pl,hit)){boot.tx=hit.x; boot.ty=hit.y;}
+}
+
+/* ---------- paredes invisibles = bordes de la pantalla ---------- */
+function resize(){
+  const w=innerWidth,h=innerHeight; ren.setSize(w,h);
+  cam.aspect=w/h; cam.updateProjectionMatrix(); cam.updateMatrixWorld();
+  const t=Math.tan(cam.fov*Math.PI/360)*cam.aspect*.97,L=Math.hypot(1,t);
+  const f=new THREE.Vector3(); cam.getWorldDirection(f);
+  const a=-f.y,b=-f.z,d=-t*(cam.position.y*a+cam.position.z*b)/L;
+  walls=[[1/L,-t*a/L,-t*b/L,d],[-1/L,-t*a/L,-t*b/L,d],[0,0,1,ZMIN],[0,0,-1,-ZMAX]];
+}
+addEventListener('resize',resize);
+
+/* ---------- contacto: impulso normal + fricción de Coulomb + spin ---------- */
+function contact(nx,ny,nz,bx,by,bz,e0,mu,pen){
+  const p=ball.p,v=ball.v,w=ball.w;
+  p.x+=nx*pen; p.y+=ny*pen; p.z+=nz*pen;
+  const rx=-nx*R,ry=-ny*R,rz=-nz*R;
+  const ux=v.x+w.y*rz-w.z*ry-bx, uy=v.y+w.z*rx-w.x*rz-by, uz=v.z+w.x*ry-w.y*rx-bz;
+  const vn=ux*nx+uy*ny+uz*nz;
+  if(vn>=0)return 0;
+  const e=e0*Math.min(1,-vn);                         // sin rebote a velocidades muy bajas
+  const jn=-(1+e)*vn*M;
+  let tx=ux-vn*nx,ty=uy-vn*ny,tz=uz-vn*nz; const tl=Math.hypot(tx,ty,tz);
+  let jx=jn*nx,jy=jn*ny,jz=jn*nz;
+  if(tl>1e-6){
+    tx/=tl;ty/=tl;tz/=tl;
+    const jt=Math.min(tl*M/2.5,mu*jn), k=R*jt/IN;
+    jx-=jt*tx; jy-=jt*ty; jz-=jt*tz;
+    w.x+=k*(ny*tz-nz*ty); w.y+=k*(nz*tx-nx*tz); w.z+=k*(nx*ty-ny*tx);
+  }
+  v.x+=jx/M; v.y+=jy/M; v.z+=jz/M;
+  return -vn;
+}
+
+const ax3=new THREE.Vector3(),dq=new THREE.Quaternion();
+function step(){
+  const b=boot,p=ball.p,v=ball.v,w=ball.w;
+
+  /* bota: muelle críticamente amortiguado hacia el cursor (w=70 rad/s) */
+  b.vx+=(4900*(b.tx-b.x)-140*b.vx)*H;
+  b.vy+=(4900*(b.ty-b.y)-140*b.vy)*H;
+  b.vz=0; b.z=0;                                    // sin movimiento en profundidad
+  const s=Math.hypot(b.vx,b.vy,b.vz); if(s>25){const k=25/s;b.vx*=k;b.vy*=k;b.vz*=k;}
+  b.x+=b.vx*H; b.y+=b.vy*H; b.z+=b.vz*H;
+  if(b.y<YMIN){b.y=YMIN; if(b.vy<0)b.vy=0;}
+  const nr=b.roll+(-Math.max(-.5,Math.min(.5,b.vx*.05))-b.roll)*Math.min(1,30*H);  // se inclina hacia donde se mueve
+  b.rr=(nr-b.roll)/H; b.roll=nr;
+
+  /* pelota: gravedad + arrastre + efecto Magnus */
+  const kd=KD*v.length();
+  v.x+=(-kd*v.x+KM*(w.y*v.z-w.z*v.y))*H;
+  v.y+=(-G-kd*v.y+KM*(w.z*v.x-w.x*v.z))*H;
+  v.z+=(-kd*v.z+KM*(w.x*v.y-w.y*v.x))*H;
+  w.multiplyScalar(1-.2*H);
+  p.addScaledVector(v,H);
+  const wl=w.length();
+  if(wl>1e-4){ax3.copy(w).divideScalar(wl); dq.setFromAxisAngle(ax3,wl*H); ball.q.premultiply(dq);}
+
+  /* suelo */
+  const pen=R-p.y;
+  if(pen>0){
+    contact(0,1,0,0,0,0,.78,.55,pen);
+    if(p.y<R+.003&&Math.abs(v.y)<.5){                 // resistencia a la rodadura
+      const h=Math.hypot(v.x,v.z);
+      if(h>0){const d=Math.min(h,.03*G*H); v.x-=v.x/h*d; v.z-=v.z/h*d;}
+      w.y*=1-1.5*H;
+    }
+  }
+  /* paredes */
+  for(let i=0;i<4;i++){const q=walls[i],d=q[0]*p.x+q[1]*p.y+q[2]*p.z-q[3]; if(d<R)contact(q[0],q[1],q[2],0,0,0,.6,.4,R-d);}
+
+  /* bota (caja redondeada orientada) */
+  const c=Math.cos(b.roll),sn=Math.sin(b.roll);
+  const dx=p.x-b.x,dy=p.y-b.y,dz=p.z-b.z;
+  const lx=c*dx+sn*dy,ly=-sn*dx+c*dy,lz=dz;
+  const ix=HX-RR,iy=HY-RR,iz=HZ-RR;
+  let ex=lx-Math.max(-ix,Math.min(ix,lx)),ey=ly-Math.max(-iy,Math.min(iy,ly)),ez=lz-Math.max(-iz,Math.min(iz,lz));
+  let dist=Math.hypot(ex,ey,ez);
+  if(dist<R+RR){
+    if(dist<1e-6){ex=0;ey=1;ez=0;dist=0;}else{ex/=dist;ey/=dist;ez/=dist;}
+    const nx=c*ex-sn*ey,ny=sn*ex+c*ey,nz=ez;
+    const rbx=p.x-nx*R-b.x,rby=p.y-ny*R-b.y;
+    const vi=contact(nx,ny,nz,b.vx-b.rr*rby,b.vy+b.rr*rbx,b.vz,.55,.6,R+RR-dist);
+    if(vi>.7&&time-lastTouch>.15){lastTouch=time;touches++;label.textContent='Toques: '+touches;}
+  }
+
+  /* plano bloqueado: la pelota solo se mueve en X e Y y gira sobre el eje Z */
+  p.z=0; v.z=0; w.x=0; w.y=0;
+
+  /* límites de seguridad */
+  const vs=v.length(); if(vs>60)v.multiplyScalar(60/vs);
+  const ws=w.length(); if(ws>90)w.multiplyScalar(90/ws);
+  time+=H;
+}
+
+function reset(){
+  ball.p.set(0,1.6,0); ball.v.set(0,0,0); ball.w.set(0,0,0); ball.q.identity();
+  touches=0; lastTouch=-1; label.textContent='Toques: 0';
+  boot.z=0; boot.vx=boot.vy=boot.vz=0; boot.roll=0; boot.rr=0;
+  aim(); boot.x=boot.tx; boot.y=Math.max(boot.ty,YMIN);
+}
+addEventListener('keydown',e=>{if(e.code==='KeyR')reset();});
+
+/* ---------- bucle ---------- */
+const tmp=new THREE.Vector3();
+let last=performance.now(),acc=0;
+function loop(t){
+  requestAnimationFrame(loop);
+  acc+=Math.min((t-last)/1000,.05); last=t;
+  aim();
+  let n=0; while(acc>=H&&n++<60){step();acc-=H;}
+  if(acc>=H)acc=0;
+  ballMesh.position.copy(ball.p); ballMesh.quaternion.copy(ball.q.normalize());
+  bootG.position.set(boot.x,boot.y,boot.z); bootG.rotation.z=boot.roll;
+  tmp.copy(ball.p).project(cam);
+  if(tmp.y>1.02){
+    ind.style.display='block';
+    ind.style.left=Math.max(30,Math.min(innerWidth-30,(tmp.x*.5+.5)*innerWidth))+'px';
+    indh.textContent=ball.p.y.toFixed(1)+' m';
+  }else ind.style.display='none';
+  ren.render(scene,cam);
+}
+resize(); reset(); requestAnimationFrame(loop);
+</script>
+</body>
+</html>
