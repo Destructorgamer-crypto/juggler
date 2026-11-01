@@ -8,6 +8,7 @@
 html,body{margin:0;height:100%;overflow:hidden;background:#262b36;cursor:none}
 canvas{display:block}
 #c{position:fixed;top:18px;left:0;right:0;text-align:center;font:500 22px system-ui,sans-serif;color:#f0f0f4;pointer-events:none;user-select:none}
+#c small{display:block;font-size:14px;color:#9aa0b2;margin-top:2px}
 #u{position:fixed;top:62px;transform:translateX(-50%);font:500 12px system-ui,sans-serif;color:#9aa0b2;display:none;pointer-events:none;text-align:center;line-height:1.3}
 </style>
 </head>
@@ -22,13 +23,15 @@ const RHO=1.2, A=Math.PI*R*R;
 const KD=0.5*RHO*0.25*A/M;                           // arrastre (Cd=0.25)
 const KM=0.25*RHO*A*R/M;                             // Magnus
 const IN=2/3*M*R*R;                                  // inercia (esfera hueca)
-const HX=.1, HY=.055, HZ=.16, RR=.05;                // colisionador de la bota: caja redondeada
-const ZMIN=-1.5, ZMAX=.8, YMIN=.07;
+const HX=.13, HY=.07, HZ=.2, RR=.062;                // colisionador de la bota: caja redondeada
+const ZMIN=-1.5, ZMAX=.8, YMIN=.09;
 
 const ball={p:new THREE.Vector3(),v:new THREE.Vector3(),w:new THREE.Vector3(),q:new THREE.Quaternion()};
 const boot={x:0,y:.5,z:0,vx:0,vy:0,vz:0,roll:0,rr:0,tx:0,ty:.5};
-let touches=0,time=0,lastTouch=-1,walls=[];
+let touches=0,time=0,lastTouch=-1,walls=[],hold=0,best=0;
+try{best=+localStorage.getItem('juggleBest')||0;}catch(e){}
 const label=document.getElementById('c'),ind=document.getElementById('u'),indh=document.getElementById('uh');
+function show(){label.innerHTML='Toques: '+touches+'<small>Récord: '+best+'</small>';}
 
 /* ---------- escena ---------- */
 const BG=0x262b36, scene=new THREE.Scene();
@@ -109,11 +112,11 @@ const body=new THREE.Mesh(
   new THREE.MeshStandardMaterial({vertexColors:true,roughness:.4,metalness:.05}));
 body.castShadow=true; bootG.add(body);
 const sole=new THREE.Mesh(rbox(HX+.004,.018,HZ+.004,.018,16,()=>[.9,.9,.92]),new THREE.MeshStandardMaterial({vertexColors:true,roughness:.5}));
-sole.position.y=-.045; sole.castShadow=true; bootG.add(sole);
+sole.position.y=-.058; sole.castShadow=true; bootG.add(sole);
 const studMat=new THREE.MeshStandardMaterial({color:0xe8e8ec,roughness:.5});
-[[-.06,.09],[.06,.09],[-.05,-.07],[.05,-.07]].forEach(([x,z])=>{
-  const s=new THREE.Mesh(new THREE.CylinderGeometry(.01,.013,.02,10),studMat);
-  s.position.set(x,-.073,z); s.castShadow=true; bootG.add(s);
+[[-.08,.11],[.08,.11],[-.065,-.09],[.065,-.09]].forEach(([x,z])=>{
+  const s=new THREE.Mesh(new THREE.CylinderGeometry(.013,.016,.025,10),studMat);
+  s.position.set(x,-.09,z); s.castShadow=true; bootG.add(s);
 });
 scene.add(bootG);
 
@@ -172,6 +175,8 @@ function step(){
   const nr=b.roll+(-Math.max(-.5,Math.min(.5,b.vx*.05))-b.roll)*Math.min(1,30*H);  // se inclina hacia donde se mueve
   b.rr=(nr-b.roll)/H; b.roll=nr;
 
+  if(time<hold){time+=H;return;}                      // pausa antes de caer
+
   /* pelota: gravedad + arrastre + efecto Magnus */
   const kd=KD*v.length();
   v.x+=(-kd*v.x+KM*(w.y*v.z-w.z*v.y))*H;
@@ -184,14 +189,7 @@ function step(){
 
   /* suelo */
   const pen=R-p.y;
-  if(pen>0){
-    contact(0,1,0,0,0,0,.78,.55,pen);
-    if(p.y<R+.003&&Math.abs(v.y)<.5){                 // resistencia a la rodadura
-      const h=Math.hypot(v.x,v.z);
-      if(h>0){const d=Math.min(h,.03*G*H); v.x-=v.x/h*d; v.z-=v.z/h*d;}
-      w.y*=1-1.5*H;
-    }
-  }
+  if(pen>0){ respawn(); return; }                     // toca el suelo: toques a 0 y la pelota vuelve a caer
   /* paredes */
   for(let i=0;i<4;i++){const q=walls[i],d=q[0]*p.x+q[1]*p.y+q[2]*p.z-q[3]; if(d<R)contact(q[0],q[1],q[2],0,0,0,.6,.4,R-d);}
 
@@ -207,7 +205,9 @@ function step(){
     const nx=c*ex-sn*ey,ny=sn*ex+c*ey,nz=ez;
     const rbx=p.x-nx*R-b.x,rby=p.y-ny*R-b.y;
     const vi=contact(nx,ny,nz,b.vx-b.rr*rby,b.vy+b.rr*rbx,b.vz,.55,.6,R+RR-dist);
-    if(vi>.7&&time-lastTouch>.15){lastTouch=time;touches++;label.textContent='Toques: '+touches;}
+    if(vi>.7&&time-lastTouch>.15){lastTouch=time;touches++;
+      if(touches>best){best=touches;try{localStorage.setItem('juggleBest',best);}catch(e){}}
+      show();}
   }
 
   /* plano bloqueado: la pelota solo se mueve en X e Y y gira sobre el eje Z */
@@ -219,9 +219,12 @@ function step(){
   time+=H;
 }
 
-function reset(){
+function respawn(){
   ball.p.set(0,1.6,0); ball.v.set(0,0,0); ball.w.set(0,0,0); ball.q.identity();
-  touches=0; lastTouch=-1; label.textContent='Toques: 0';
+  touches=0; lastTouch=-1; hold=time+1.2; show();      // la pelota espera 1,2 s en el aire antes de caer
+}
+function reset(){
+  respawn();
   boot.z=0; boot.vx=boot.vy=boot.vz=0; boot.roll=0; boot.rr=0;
   aim(); boot.x=boot.tx; boot.y=Math.max(boot.ty,YMIN);
 }
