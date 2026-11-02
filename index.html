@@ -5,38 +5,77 @@
 <title>Juggle</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
+:root{--fg:#f0f0f4;--mut:#9aa0b2}
 html,body{margin:0;height:100%;overflow:hidden;background:#262b36;cursor:none}
+body.menu{cursor:auto}
 canvas{display:block}
-#c{position:fixed;top:18px;left:0;right:0;text-align:center;font:500 22px system-ui,sans-serif;color:#f0f0f4;pointer-events:none;user-select:none}
-#c small{display:block;font-size:14px;color:#9aa0b2;margin-top:2px}
-#u{position:fixed;top:62px;transform:translateX(-50%);font:500 12px system-ui,sans-serif;color:#9aa0b2;display:none;pointer-events:none;text-align:center;line-height:1.3}
+#c{position:fixed;top:18px;left:0;right:0;text-align:center;font:500 22px system-ui,sans-serif;color:var(--fg);pointer-events:none;user-select:none}
+#c small{display:block;font-size:14px;color:var(--mut);margin-top:2px}
+#u{position:fixed;top:78px;transform:translateX(-50%);font:500 12px system-ui,sans-serif;color:var(--mut);display:none;pointer-events:none;text-align:center;line-height:1.3}
+#g{position:fixed;top:14px;right:14px;width:38px;height:38px;padding:0;border:0;border-radius:50%;background:rgba(20,22,28,.6);color:#e8e8ec;font-size:20px;cursor:pointer}
+#m{position:fixed;top:60px;right:14px;width:280px;max-height:calc(100% - 80px);overflow:auto;box-sizing:border-box;padding:14px 16px;border-radius:12px;background:rgba(20,22,28,.95);color:#e8e8ec;font:14px system-ui,sans-serif;display:none;cursor:auto}
+#m h4{margin:14px 0 6px;font-size:12px;font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:#9aa0b2}
+#m h4:first-child{margin-top:0}
+.seg{display:flex;gap:6px;flex-wrap:wrap}
+.seg button,#rb{flex:1;padding:7px 8px;border:1px solid #3a3f4d;border-radius:8px;background:#232733;color:#e8e8ec;font:inherit;cursor:pointer}
+.seg button.on{background:#e8e8ec;color:#14161c;border-color:#e8e8ec}
+.row{display:flex;align-items:center;justify-content:space-between;margin:6px 0}
+.row input{width:44px;height:28px;border:0;padding:0;background:none;cursor:pointer}
+#rb{width:100%}
 </style>
 </head>
 <body>
-<div id="c">Toques: 0</div>
+<div id="c"></div>
 <div id="u">▲<br><span id="uh"></span></div>
+<button id="g" title="Ajustes">⚙</button>
+<div id="m">
+  <h4>Bota</h4>
+  <div class="seg" data-k="boot"><button data-v="clasica">Clásica</button><button data-v="alargada">Alargada</button></div>
+  <h4>Balón · diseño</h4>
+  <div class="seg" data-k="design"><button data-v="clasico">Clásico</button><button data-v="rayas">Rayas</button><button data-v="basket">Baloncesto</button></div>
+  <h4>Balón · tamaño</h4>
+  <div class="seg" data-k="size"><button data-v="s">Pequeño</button><button data-v="m">Normal</button><button data-v="l">Grande</button></div>
+  <h4>Colores</h4>
+  <div class="row"><span>Fondo</span><input type="color" id="cbg"></div>
+  <div class="row"><span>Bota</span><input type="color" id="cbt"></div>
+  <h4>Récord</h4>
+  <button id="rb">Reiniciar récord de toques</button>
+</div>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script>
+const $=id=>document.getElementById(id);
+
+/* ---------- ajustes (se guardan en el navegador) ---------- */
+const DEF={boot:'clasica',design:'clasico',size:'m',bg:'#262b36',bc:'#17181c'};
+const cfg=Object.assign({},DEF);
+try{Object.assign(cfg,JSON.parse(localStorage.getItem('juggleCfg')||'{}'));}catch(e){}
+const save=()=>{try{localStorage.setItem('juggleCfg',JSON.stringify(cfg));}catch(e){}};
+let best=0,prev=0;
+try{best=+localStorage.getItem('juggleBest')||0;prev=+localStorage.getItem('juggleLast')||0;}catch(e){}
+const store=()=>{try{localStorage.setItem('juggleBest',best);localStorage.setItem('juggleLast',prev);}catch(e){}};
+
+const TYPES={
+  clasica:{hx:.13,hy:.07,hz:.2,rr:.062,ymin:.09,rmax:.5,col:'#17181c',seg:32,
+    studs:[[-.08,.11],[.08,.11],[-.065,-.09],[.065,-.09]]},
+  alargada:{hx:.26,hy:.045,hz:.1,rr:.032,ymin:.14,rmax:.3,col:'#f4f4f6',seg:56,
+    studs:[-.19,-.07,.07,.19].flatMap(x=>[[x,-.035],[x,.035]])}
+};
+const SIZES={s:.09,m:.11,l:.14};
+
 /* ---------- constantes físicas (SI) ---------- */
-const R=0.11, M=0.43, G=9.81, H=0.001;               // radio, masa, gravedad, paso de física (1 kHz)
-const RHO=1.2, A=Math.PI*R*R;
-const KD=0.5*RHO*0.25*A/M;                           // arrastre (Cd=0.25)
-const KM=0.25*RHO*A*R/M;                             // Magnus
-const IN=2/3*M*R*R;                                  // inercia (esfera hueca)
-const HX=.13, HY=.07, HZ=.2, RR=.062;                // colisionador de la bota: caja redondeada
-const ZMIN=-1.5, ZMAX=.8, YMIN=.09;
+const G=9.81,H=.001,RHO=1.2,ZMIN=-1.5,ZMAX=.8;
+let R=.11,M=.43,A,KD,KM,IN;                          // dependen del tamaño del balón
+let HX,HY,HZ,RR,YMIN,RMAX;                            // dependen del tipo de bota
 
 const ball={p:new THREE.Vector3(),v:new THREE.Vector3(),w:new THREE.Vector3(),q:new THREE.Quaternion()};
 const boot={x:0,y:.5,z:0,vx:0,vy:0,vz:0,roll:0,rr:0,tx:0,ty:.5};
-let touches=0,time=0,lastTouch=-1,walls=[],hold=0,best=0;
-try{best=+localStorage.getItem('juggleBest')||0;}catch(e){}
-const label=document.getElementById('c'),ind=document.getElementById('u'),indh=document.getElementById('uh');
-function show(){label.innerHTML='Toques: '+touches+'<small>Récord: '+best+'</small>';}
+let touches=0,time=0,lastTouch=-1,walls=[],hold=0,paused=false;
+const label=$('c'),ind=$('u'),indh=$('uh');
+function show(){label.innerHTML='Toques: '+touches+'<small>Récord: '+best+' · Anterior: '+prev+'</small>';}
 
 /* ---------- escena ---------- */
-const BG=0x262b36, scene=new THREE.Scene();
-scene.background=new THREE.Color(BG);
-scene.fog=new THREE.Fog(BG,9,26);
+const scene=new THREE.Scene();
+scene.fog=new THREE.Fog(0x262b36,9,26);
 const cam=new THREE.PerspectiveCamera(35,1,.1,100);
 cam.position.set(0,2.2,5.4); cam.lookAt(0,1.15,0);
 const ren=new THREE.WebGLRenderer({antialias:true});
@@ -51,44 +90,75 @@ const sc=sun.shadow.camera; sc.left=sc.bottom=-4; sc.right=sc.top=4; sc.near=1; 
 sun.shadow.bias=-.0004; scene.add(sun);
 const rim=new THREE.DirectionalLight(0x8fb0ff,.5); rim.position.set(-3,3,-4); scene.add(rim);
 
-const floor=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshStandardMaterial({color:0x2c313d,roughness:.95}));
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(80,80),new THREE.MeshStandardMaterial({roughness:.95}));
 floor.rotation.x=-Math.PI/2; floor.receiveShadow=true; scene.add(floor);
-const grid=new THREE.GridHelper(80,80,0x3b4252,0x343a49); grid.position.y=.002; scene.add(grid);
+let grid=new THREE.GridHelper(80,80); scene.add(grid);
 
-/* ---------- pelota clásica (pentágonos negros) ---------- */
-function ballTex(){
+const lum=c=>.299*c.r+.587*c.g+.114*c.b;
+function theme(){
+  const bg=new THREE.Color(cfg.bg),light=lum(bg)>.5,opp=new THREE.Color(light?0x000000:0xffffff);
+  scene.background=bg; scene.fog.color.copy(bg); document.body.style.background=cfg.bg;
+  floor.material.color.copy(bg).lerp(opp,.07);
+  scene.remove(grid); grid.geometry.dispose(); grid.material.dispose();
+  grid=new THREE.GridHelper(80,80,bg.clone().lerp(opp,.16),bg.clone().lerp(opp,.11));
+  grid.position.y=.002; scene.add(grid);
+  const s=document.documentElement.style;
+  s.setProperty('--fg',light?'#1a1d24':'#f0f0f4'); s.setProperty('--mut',light?'#5a6070':'#9aa0b2');
+}
+
+/* ---------- balón: 3 diseños ---------- */
+function ballTex(kind){
   const W=512,Hh=256,cv=document.createElement('canvas'); cv.width=W; cv.height=Hh;
-  const g=cv.getContext('2d'),im=g.createImageData(W,Hh),D=im.data,t=(1+Math.sqrt(5))/2,V=[];
-  for(const a of[-1,1])for(const b of[-t,t])V.push([0,a,b],[a,b,0],[b,0,a]);
-  V.forEach(v=>{const l=Math.hypot(v[0],v[1],v[2]);v[0]/=l;v[1]/=l;v[2]/=l;});
-  const B=V.map(v=>{
-    const nb=V.find(u=>Math.abs(u[0]*v[0]+u[1]*v[1]+u[2]*v[2]-.4472)<.01);
-    const k=nb[0]*v[0]+nb[1]*v[1]+nb[2]*v[2];
-    let e=[nb[0]-v[0]*k,nb[1]-v[1]*k,nb[2]-v[2]*k]; const l=Math.hypot(e[0],e[1],e[2]); e=e.map(x=>x/l);
-    return [e,[v[1]*e[2]-v[2]*e[1],v[2]*e[0]-v[0]*e[2],v[0]*e[1]-v[1]*e[0]]];
-  });
-  const P=1.2566;
+  const g=cv.getContext('2d'),im=g.createImageData(W,Hh),D=im.data,P=1.2566;
+  let V,B;
+  if(kind==='clasico'){
+    const t=(1+Math.sqrt(5))/2; V=[];
+    for(const a of[-1,1])for(const b of[-t,t])V.push([0,a,b],[a,b,0],[b,0,a]);
+    V.forEach(v=>{const l=Math.hypot(v[0],v[1],v[2]);v[0]/=l;v[1]/=l;v[2]/=l;});
+    B=V.map(v=>{
+      const nb=V.find(u=>Math.abs(u[0]*v[0]+u[1]*v[1]+u[2]*v[2]-.4472)<.01);
+      const k=nb[0]*v[0]+nb[1]*v[1]+nb[2]*v[2];
+      let e=[nb[0]-v[0]*k,nb[1]-v[1]*k,nb[2]-v[2]*k]; const l=Math.hypot(e[0],e[1],e[2]); e=e.map(x=>x/l);
+      return [e,[v[1]*e[2]-v[2]*e[1],v[2]*e[0]-v[0]*e[2],v[0]*e[1]-v[1]*e[0]]];
+    });
+  }
   for(let y=0;y<Hh;y++)for(let x=0;x<W;x++){
     const th=(y+.5)/Hh*Math.PI,ph=(x+.5)/W*2*Math.PI,st=Math.sin(th);
     const d=[-Math.cos(ph)*st,Math.cos(th),Math.sin(ph)*st];
-    let bi=0,bd=-2;
-    for(let i=0;i<12;i++){const dd=d[0]*V[i][0]+d[1]*V[i][1]+d[2]*V[i][2];if(dd>bd){bd=dd;bi=i;}}
-    let c=244; const ang=Math.acos(Math.min(1,bd));
-    if(ang<.4){
-      const e1=B[bi][0],e2=B[bi][1];
-      const al=Math.atan2(d[0]*e2[0]+d[1]*e2[1]+d[2]*e2[2],d[0]*e1[0]+d[1]*e1[1]+d[2]*e1[2]);
-      const f=Math.abs(((al%P)+P)%P-P/2), rho=.28/Math.cos(f);
-      if(ang<rho)c=22; else if(ang<rho+.012)c=90;
+    let r=244,gg=244,bb=244;
+    if(kind==='clasico'){
+      let bi=0,bd=-2;
+      for(let i=0;i<12;i++){const dd=d[0]*V[i][0]+d[1]*V[i][1]+d[2]*V[i][2];if(dd>bd){bd=dd;bi=i;}}
+      const ang=Math.acos(Math.min(1,bd));
+      if(ang<.4){
+        const e1=B[bi][0],e2=B[bi][1];
+        const al=Math.atan2(d[0]*e2[0]+d[1]*e2[1]+d[2]*e2[2],d[0]*e1[0]+d[1]*e1[1]+d[2]*e1[2]);
+        const f=Math.abs(((al%P)+P)%P-P/2), rho=.28/Math.cos(f);
+        if(ang<rho)r=gg=bb=22; else if(ang<rho+.012)r=gg=bb=90;
+      }
+    }else if(kind==='rayas'){
+      if(Math.floor(ph/(2*Math.PI)*12)%2){r=47;gg=125;bb=225;}
+    }else{
+      r=232;gg=120;bb=42;
+      if(Math.abs(d[1])<.022||Math.abs(d[2])<.022||Math.abs(Math.abs(d[0])-.62)<.022)r=gg=bb=20;
     }
-    const o=(y*W+x)*4; D[o]=D[o+1]=D[o+2]=c; D[o+3]=255;
+    const o=(y*W+x)*4; D[o]=r; D[o+1]=gg; D[o+2]=bb; D[o+3]=255;
   }
   g.putImageData(im,0,0);
   return new THREE.CanvasTexture(cv);
 }
-const ballMesh=new THREE.Mesh(new THREE.SphereGeometry(R,48,32),new THREE.MeshStandardMaterial({map:ballTex(),roughness:.45}));
+const texC={}, tex=k=>texC[k]||(texC[k]=ballTex(k));
+const ballMat=new THREE.MeshStandardMaterial({roughness:.45});
+const ballMesh=new THREE.Mesh(new THREE.SphereGeometry(.11,48,32),ballMat);
 ballMesh.castShadow=true; scene.add(ballMesh);
+function applyBall(){
+  ballMat.map=tex(cfg.design); ballMat.needsUpdate=true;
+  R=SIZES[cfg.size]; M=.43*(R/.11)**2; A=Math.PI*R*R;
+  KD=.5*RHO*.25*A/M; KM=.25*RHO*A*R/M; IN=2/3*M*R*R;
+  ballMesh.scale.setScalar(R/.11);
+}
 
-/* ---------- puntera de la bota (misma forma que el colisionador) ---------- */
+/* ---------- bota (misma forma visual y de colisión) ---------- */
 function rbox(hx,hy,hz,r,seg,col){
   const g=new THREE.BoxGeometry(2*hx,2*hy,2*hz,seg,seg>>1,seg),P=g.attributes.position,N=g.attributes.normal;
   const ix=hx-r,iy=hy-r,iz=hz-r,C=new Float32Array(P.count*3);
@@ -98,27 +168,37 @@ function rbox(hx,hy,hz,r,seg,col){
     let nx=x-cx,ny=y-cy,nz=z-cz; const l=Math.hypot(nx,ny,nz)||1; nx/=l;ny/=l;nz/=l;
     const fx=cx+nx*r,fy=cy+ny*r,fz=cz+nz*r;
     P.setXYZ(i,fx,fy,fz); N.setXYZ(i,nx,ny,nz);
-    const c=col(fx,fy,fz,nx); C[i*3]=c[0];C[i*3+1]=c[1];C[i*3+2]=c[2];
+    const c=col(fx,fy,fz,nx,ny); C[i*3]=c[0];C[i*3+1]=c[1];C[i*3+2]=c[2];
   }
   g.setAttribute('color',new THREE.BufferAttribute(C,3));
   return g;
 }
-const bootG=new THREE.Group();
-const body=new THREE.Mesh(
-  rbox(HX,HY,HZ,RR,32,(x,y,z,nx)=>{
-    if(Math.abs(nx)>.3){const s=z+1.2*y+.2,k=Math.floor(s/.07); if(k>=1&&k<=3&&s-k*.07<.024)return[.95,.95,.97];}
-    return[.09,.095,.11];
-  }),
-  new THREE.MeshStandardMaterial({vertexColors:true,roughness:.4,metalness:.05}));
-body.castShadow=true; bootG.add(body);
-const sole=new THREE.Mesh(rbox(HX+.004,.018,HZ+.004,.018,16,()=>[.9,.9,.92]),new THREE.MeshStandardMaterial({vertexColors:true,roughness:.5}));
-sole.position.y=-.058; sole.castShadow=true; bootG.add(sole);
-const studMat=new THREE.MeshStandardMaterial({color:0xe8e8ec,roughness:.5});
-[[-.08,.11],[.08,.11],[-.065,-.09],[.065,-.09]].forEach(([x,z])=>{
-  const s=new THREE.Mesh(new THREE.CylinderGeometry(.013,.016,.025,10),studMat);
-  s.position.set(x,-.09,z); s.castShadow=true; bootG.add(s);
-});
-scene.add(bootG);
+const bootG=new THREE.Group(); scene.add(bootG);
+function buildBoot(){
+  while(bootG.children.length){const o=bootG.children[0];bootG.remove(o);o.geometry.dispose();o.material.dispose();}
+  const T=TYPES[cfg.boot],bc=new THREE.Color(cfg.bc);
+  const ac=lum(bc)>.55?[.1,.11,.14]:[.95,.95,.97];
+  const body=new THREE.Mesh(
+    rbox(HX,HY,HZ,RR,T.seg,(x,y,z,nx,ny)=>{
+      if(cfg.boot==='clasica'){
+        if(Math.abs(nx)>.3){const s=z+1.2*y+.2,k=Math.floor(s/.07); if(k>=1&&k<=3&&s-k*.07<.024)return ac;}
+      }else if(ny>.5&&Math.abs(z)<HZ*.55&&Math.abs(x)<HX*.72)return[.2,.69,.91];
+      return[bc.r,bc.g,bc.b];
+    }),
+    new THREE.MeshStandardMaterial({vertexColors:true,roughness:.4,metalness:.05}));
+  body.castShadow=true; bootG.add(body);
+  const sole=new THREE.Mesh(rbox(HX+.004,.018,HZ+.004,.018,16,()=>[.9,.9,.92]),new THREE.MeshStandardMaterial({vertexColors:true,roughness:.5}));
+  sole.position.y=-(HY-.012); sole.castShadow=true; bootG.add(sole);
+  const studMat=new THREE.MeshStandardMaterial({color:0xe8e8ec,roughness:.5});
+  T.studs.forEach(([x,z])=>{
+    const s=new THREE.Mesh(new THREE.CylinderGeometry(.013,.016,.025,10),studMat);
+    s.position.set(x,-(HY+.02),z); s.castShadow=true; bootG.add(s);
+  });
+}
+function applyBoot(){
+  const T=TYPES[cfg.boot]; HX=T.hx;HY=T.hy;HZ=T.hz;RR=T.rr;YMIN=T.ymin;RMAX=T.rmax;
+  buildBoot();
+}
 
 /* ---------- ratón -> posición de la bota ---------- */
 const ray=new THREE.Raycaster(),ndc=new THREE.Vector2(0,-.2),pl=new THREE.Plane(new THREE.Vector3(0,0,1),0),hit=new THREE.Vector3();
@@ -147,7 +227,7 @@ function contact(nx,ny,nz,bx,by,bz,e0,mu,pen){
   const ux=v.x+w.y*rz-w.z*ry-bx, uy=v.y+w.z*rx-w.x*rz-by, uz=v.z+w.x*ry-w.y*rx-bz;
   const vn=ux*nx+uy*ny+uz*nz;
   if(vn>=0)return 0;
-  const e=e0*Math.min(1,-vn);                         // sin rebote a velocidades muy bajas
+  const e=e0*Math.min(1,-vn);
   const jn=-(1+e)*vn*M;
   let tx=ux-vn*nx,ty=uy-vn*ny,tz=uz-vn*nz; const tl=Math.hypot(tx,ty,tz);
   let jx=jn*nx,jy=jn*ny,jz=jn*nz;
@@ -168,11 +248,11 @@ function step(){
   /* bota: muelle críticamente amortiguado hacia el cursor (w=70 rad/s) */
   b.vx+=(4900*(b.tx-b.x)-140*b.vx)*H;
   b.vy+=(4900*(b.ty-b.y)-140*b.vy)*H;
-  b.vz=0; b.z=0;                                    // sin movimiento en profundidad
-  const s=Math.hypot(b.vx,b.vy,b.vz); if(s>25){const k=25/s;b.vx*=k;b.vy*=k;b.vz*=k;}
-  b.x+=b.vx*H; b.y+=b.vy*H; b.z+=b.vz*H;
+  b.vz=0; b.z=0;
+  const s=Math.hypot(b.vx,b.vy); if(s>25){const k=25/s;b.vx*=k;b.vy*=k;}
+  b.x+=b.vx*H; b.y+=b.vy*H;
   if(b.y<YMIN){b.y=YMIN; if(b.vy<0)b.vy=0;}
-  const nr=b.roll+(-Math.max(-.5,Math.min(.5,b.vx*.05))-b.roll)*Math.min(1,30*H);  // se inclina hacia donde se mueve
+  const nr=b.roll+(-Math.max(-RMAX,Math.min(RMAX,b.vx*.05))-b.roll)*Math.min(1,30*H);
   b.rr=(nr-b.roll)/H; b.roll=nr;
 
   if(time<hold){time+=H;return;}                      // pausa antes de caer
@@ -187,9 +267,8 @@ function step(){
   const wl=w.length();
   if(wl>1e-4){ax3.copy(w).divideScalar(wl); dq.setFromAxisAngle(ax3,wl*H); ball.q.premultiply(dq);}
 
-  /* suelo */
-  const pen=R-p.y;
-  if(pen>0){ respawn(); return; }                     // toca el suelo: toques a 0 y la pelota vuelve a caer
+  /* suelo: la partida termina y la pelota vuelve a caer */
+  if(R-p.y>0){endRun(); respawn(); return;}
   /* paredes */
   for(let i=0;i<4;i++){const q=walls[i],d=q[0]*p.x+q[1]*p.y+q[2]*p.z-q[3]; if(d<R)contact(q[0],q[1],q[2],0,0,0,.6,.4,R-d);}
 
@@ -205,40 +284,63 @@ function step(){
     const nx=c*ex-sn*ey,ny=sn*ex+c*ey,nz=ez;
     const rbx=p.x-nx*R-b.x,rby=p.y-ny*R-b.y;
     const vi=contact(nx,ny,nz,b.vx-b.rr*rby,b.vy+b.rr*rbx,b.vz,.55,.6,R+RR-dist);
-    if(vi>.7&&time-lastTouch>.15){lastTouch=time;touches++;
-      if(touches>best){best=touches;try{localStorage.setItem('juggleBest',best);}catch(e){}}
-      show();}
+    if(vi>.7&&time-lastTouch>.15){
+      lastTouch=time; touches++;
+      if(touches>best){best=touches;store();}
+      show();
+    }
   }
 
-  /* plano bloqueado: la pelota solo se mueve en X e Y y gira sobre el eje Z */
+  /* plano bloqueado: sin movimiento hacia delante ni atrás */
   p.z=0; v.z=0; w.x=0; w.y=0;
-
-  /* límites de seguridad */
   const vs=v.length(); if(vs>60)v.multiplyScalar(60/vs);
   const ws=w.length(); if(ws>90)w.multiplyScalar(90/ws);
   time+=H;
 }
 
+function endRun(){ if(touches>0){prev=touches;store();} }
 function respawn(){
   ball.p.set(0,1.6,0); ball.v.set(0,0,0); ball.w.set(0,0,0); ball.q.identity();
-  touches=0; lastTouch=-1; hold=time+1.2; show();      // la pelota espera 1,2 s en el aire antes de caer
+  touches=0; lastTouch=-1; hold=time+1.2; show();      // espera 1,2 s en el aire antes de caer
 }
 function reset(){
   respawn();
-  boot.z=0; boot.vx=boot.vy=boot.vz=0; boot.roll=0; boot.rr=0;
+  boot.vx=boot.vy=boot.vz=0; boot.roll=0; boot.rr=0;
   aim(); boot.x=boot.tx; boot.y=Math.max(boot.ty,YMIN);
 }
-addEventListener('keydown',e=>{if(e.code==='KeyR')reset();});
+
+/* ---------- menú de ajustes ---------- */
+function menu(o){paused=o;$('m').style.display=o?'block':'none';document.body.classList.toggle('menu',o);}
+function sync(){
+  document.querySelectorAll('.seg').forEach(s=>s.querySelectorAll('button').forEach(b=>b.classList.toggle('on',cfg[s.dataset.k]===b.dataset.v)));
+  $('cbg').value=cfg.bg; $('cbt').value=cfg.bc;
+}
+document.querySelectorAll('.seg button').forEach(b=>b.onclick=()=>{
+  const k=b.parentNode.dataset.k; cfg[k]=b.dataset.v;
+  if(k==='boot'){cfg.bc=TYPES[cfg.boot].col; applyBoot();} else applyBall();
+  respawn(); save(); sync();
+});
+$('cbg').oninput=e=>{cfg.bg=e.target.value;theme();save();};
+$('cbt').oninput=e=>{cfg.bc=e.target.value;buildBoot();save();};
+$('rb').onclick=()=>{best=0;prev=0;store();show();};
+$('g').onclick=()=>menu(!paused);
+addEventListener('keydown',e=>{
+  if(e.code==='Escape')menu(false);
+  else if(e.code==='KeyR'&&!paused){endRun();reset();}
+});
 
 /* ---------- bucle ---------- */
 const tmp=new THREE.Vector3();
 let last=performance.now(),acc=0;
 function loop(t){
   requestAnimationFrame(loop);
-  acc+=Math.min((t-last)/1000,.05); last=t;
+  const dt=Math.min((t-last)/1000,.05); last=t;
   aim();
-  let n=0; while(acc>=H&&n++<60){step();acc-=H;}
-  if(acc>=H)acc=0;
+  if(!paused){
+    acc+=dt;
+    let n=0; while(acc>=H&&n++<60){step();acc-=H;}
+    if(acc>=H)acc=0;
+  }
   ballMesh.position.copy(ball.p); ballMesh.quaternion.copy(ball.q.normalize());
   bootG.position.set(boot.x,boot.y,boot.z); bootG.rotation.z=boot.roll;
   tmp.copy(ball.p).project(cam);
@@ -249,7 +351,8 @@ function loop(t){
   }else ind.style.display='none';
   ren.render(scene,cam);
 }
-resize(); reset(); requestAnimationFrame(loop);
+applyBall(); applyBoot(); theme(); sync(); resize(); reset();
+requestAnimationFrame(loop);
 </script>
 </body>
 </html>
